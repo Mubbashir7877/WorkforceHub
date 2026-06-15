@@ -1,0 +1,100 @@
+#!/bin/sh
+#
+# Maven Wrapper startup script for POSIX-compatible shells
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements. See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership. The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License. You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied. See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# OS specific support.
+cygwin=false
+darwin=false
+mingw=false
+case "$(uname)" in
+    CYGWIN*) cygwin=true ;;
+    MINGW*)  mingw=true  ;;
+    Darwin*) darwin=true ;;
+esac
+
+MAVEN_WRAPPER_PROPERTIES="./.mvn/wrapper/maven-wrapper.properties"
+
+if [ -f "$MAVEN_WRAPPER_PROPERTIES" ]; then
+    DISTRIBUTION_URL=$(grep 'distributionUrl' "$MAVEN_WRAPPER_PROPERTIES" | cut -d= -f2-)
+    WRAPPER_URL=$(grep 'wrapperUrl' "$MAVEN_WRAPPER_PROPERTIES" | cut -d= -f2-)
+fi
+
+MAVEN_USER_HOME="${MAVEN_USER_HOME:-${HOME}/.m2}"
+MAVEN_WRAPPER_HOME="${MAVEN_USER_HOME}/wrapper"
+MAVEN_WRAPPER_JAR="${MAVEN_WRAPPER_HOME}/dists/maven-wrapper.jar"
+
+# -------------------------------------------------------------------------
+# Determine JAVA_HOME if not set
+# -------------------------------------------------------------------------
+if [ -z "$JAVA_HOME" ]; then
+    javaExecutable="$(which javac)"
+    if [ -n "$javaExecutable" ]; then
+        if $darwin; then
+            javaHome="$(dirname "$javaExecutable")"
+            javaHome="$(cd "$javaHome" && pwd -P)"
+        else
+            javaExecutable="$(readlink -f "$javaExecutable")"
+            javaHome="$(dirname "$javaExecutable")"
+        fi
+        JAVA_HOME=$(expr "$javaHome" : '\(.*\)/bin')
+        export JAVA_HOME
+    fi
+fi
+
+if [ -z "$JAVA_HOME" ] && [ -x /usr/libexec/java_home ]; then
+    JAVA_HOME="$(/usr/libexec/java_home)"
+    export JAVA_HOME
+fi
+
+JAVA_CMD="java"
+if [ -n "$JAVA_HOME" ]; then
+    JAVA_CMD="${JAVA_HOME}/bin/java"
+fi
+
+# -------------------------------------------------------------------------
+# Download wrapper jar if missing
+# -------------------------------------------------------------------------
+if [ ! -f "$MAVEN_WRAPPER_JAR" ]; then
+    mkdir -p "$MAVEN_WRAPPER_HOME/dists"
+    if command -v curl > /dev/null 2>&1; then
+        curl -fsSL -o "$MAVEN_WRAPPER_JAR" "$WRAPPER_URL" 2>/dev/null || true
+    elif command -v wget > /dev/null 2>&1; then
+        wget -q -O "$MAVEN_WRAPPER_JAR" "$WRAPPER_URL" 2>/dev/null || true
+    fi
+fi
+
+# -------------------------------------------------------------------------
+# Try wrapper jar first, fall back to system mvn
+# -------------------------------------------------------------------------
+if [ -f "$MAVEN_WRAPPER_JAR" ]; then
+    exec "$JAVA_CMD" \
+        $MAVEN_OPTS \
+        -classpath "$MAVEN_WRAPPER_JAR" \
+        org.apache.maven.wrapper.MavenWrapperMain \
+        "$@"
+elif command -v mvn > /dev/null 2>&1; then
+    exec mvn "$@"
+else
+    echo "ERROR: Neither Maven Wrapper jar nor system 'mvn' found."
+    echo "Install Maven (https://maven.apache.org/install.html) or run:"
+    echo "  mvn wrapper:wrapper -Dmaven=3.9.6"
+    exit 1
+fi

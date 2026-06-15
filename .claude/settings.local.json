@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.javaguides.net)",
+      "Bash(chmod +x *)",
+      "Bash(mysql --version)",
+      "Bash(mysql -u root -e \"SHOW DATABASES LIKE 'employee_management';\")",
+      "Bash(java -version)",
+      "Read(//usr/local/**)",
+      "Read(//opt/homebrew/opt/**)",
+      "Bash(brew services *)",
+      "Bash(brew --version)"
+    ]
+  }
+}
