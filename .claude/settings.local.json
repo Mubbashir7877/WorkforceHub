@@ -9,7 +9,12 @@
       "Read(//usr/local/**)",
       "Read(//opt/homebrew/opt/**)",
       "Bash(brew services *)",
-      "Bash(brew --version)"
+      "Bash(brew --version)",
+      "PowerShell(npm *)",
+      "PowerShell(java *)",
+      "PowerShell(git *)",
+      "PowerShell(mysql *)",
+      "PowerShell(& \"C:\\\\Program Files\\\\MySQL\\\\MySQL Server 8.0\\\\bin\\\\mysql.exe\" -u root -pMoPaKa78 -e \"CREATE DATABASE IF NOT EXISTS employee_management; SHOW DATABASES LIKE 'employee_management';\" 2>&1)"
     ]
   }
 }
