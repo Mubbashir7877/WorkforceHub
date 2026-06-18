@@ -447,3 +447,195 @@ Vite will automatically try the next available port (5174, 5175, …). Update `F
 - **Soft delete only:** employees are deactivated (`active=false`), never hard-deleted, preserving historical/audit data.
 - **Last-admin protection:** the backend rejects any role change that would leave zero `SYSTEM_ADMIN` accounts (`LAST_ADMIN_ROLE` error), preventing total lockout.
 - **Secrets:** `JWT_SECRET`, DB credentials, and admin bootstrap credentials are all environment-variable-driven with dev-only placeholders in `application.properties`; never commit real values — `backend/.env` and `frontend/.env` are both Git-ignored, only the `.env.example` templates are tracked.
+
+---
+
+## Phase 2 — Kafka-Powered HR Activity Pipeline
+
+### Overview
+
+Every time an HR-level user (HR\_ADMIN or SYSTEM\_ADMIN) manipulates employee records, the backend publishes a structured JSON event to a Kafka topic. A separate consumer within the same application reads that event and stores it as a permanent activity log in MySQL. SYSTEM\_ADMIN users can browse the full audit trail through the **System Activity** page in the frontend.
+
+```
+EmployeeController
+    ↓  (HTTP request)
+EmployeeService  ─── DB write committed ───▶  schedules after-commit callback
+    ↓
+EmployeeActivityEventProducer.publish()
+    ↓
+Kafka topic: hr.employee.events
+    ↓
+EmployeeActivityEventConsumer.consume()
+    ↓
+SystemActivityLogService.save()
+    ↓
+system_activity_logs table (MySQL)
+    ↓
+GET /api/v1/system/activity-logs  (SYSTEM_ADMIN only)
+    ↓
+System Activity page (React, SYSTEM_ADMIN only)
+```
+
+---
+
+### Kafka Concepts Used in This Project
+
+| Concept | Role in this app |
+|---------|-----------------|
+| **Producer** | `EmployeeActivityEventProducer` — publishes events after a successful employee operation |
+| **Consumer** | `EmployeeActivityEventConsumer` — subscribes to the topic and persists activity logs |
+| **Topic** | `hr.employee.events` — the message channel; auto-created on first publish |
+| **Consumer group** | `hr-employee-activity-consumer` — tracks which messages the consumer has processed |
+| **Event** | `EmployeeActivityEvent` — JSON DTO carrying who did what, to whom, and when |
+| **Offset** | Kafka's per-partition cursor; `auto-offset-reset=earliest` means the consumer starts from the beginning of the topic if it has no saved offset |
+
+---
+
+### Local Kafka Setup (Docker)
+
+Kafka runs via Docker Compose. No local Kafka installation is needed.
+
+**Start Kafka and Kafka UI:**
+```bash
+docker compose up -d
+```
+
+**View live logs:**
+```bash
+docker compose logs -f kafka
+```
+
+**Stop everything:**
+```bash
+docker compose down
+```
+
+**Wipe data and start fresh:**
+```bash
+docker compose down -v
+docker compose up -d
+```
+
+**Kafka UI** (view topics, messages, consumers in a browser):
+```
+http://localhost:8085
+```
+
+Ports used:
+| Service | Port |
+|---------|------|
+| Kafka broker | `9092` |
+| Kafka UI | `8085` |
+| Backend API | `8080` |
+| Frontend dev | `5173` |
+
+---
+
+### Kafka Environment Variables
+
+Add to your IDE run configuration or shell environment:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker address |
+| `EMPLOYEE_EVENTS_TOPIC` | `hr.employee.events` | Topic name for employee events |
+| `KAFKA_CONSUMER_GROUP` | `hr-employee-activity-consumer` | Consumer group ID |
+
+---
+
+### Implemented Event Types
+
+| `eventType` | Triggered by |
+|-------------|-------------|
+| `EMPLOYEE_CREATED` | `POST /api/v1/employees` |
+| `EMPLOYEE_UPDATED` | `PUT /api/v1/employees/{id}` |
+| `EMPLOYEE_DEACTIVATED` | `DELETE /api/v1/employees/{id}` (soft deactivation) |
+| `EMPLOYEE_LINKED_TO_USER` | `PUT /api/v1/admin/users/{id}/employee` |
+
+Events are **never** published for failed operations (validation errors, 401, 403, DB failures). Events contain no passwords, tokens, or secrets.
+
+---
+
+### Activity Log API
+
+```
+GET /api/v1/system/activity-logs
+```
+
+**Access:** SYSTEM\_ADMIN only. Returns 401 for unauthenticated, 403 for insufficient role.
+
+**Query parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `page` | `0` | Zero-based page number |
+| `size` | `20` | Records per page |
+| `eventType` | _(none)_ | Filter by event type (e.g. `EMPLOYEE_CREATED`) |
+
+**Response shape (Spring Page):**
+```json
+{
+  "content": [
+    {
+      "id": 1,
+      "eventId": "uuid",
+      "eventType": "EMPLOYEE_CREATED",
+      "entityType": "EMPLOYEE",
+      "entityId": 42,
+      "actorEmail": "admin@company.com",
+      "actorRoles": "HR_ADMIN",
+      "message": "HR admin admin@company.com created employee Jane Smith.",
+      "occurredAt": "2026-06-18T14:00:00Z",
+      "consumedAt": "2026-06-18T14:00:01Z",
+      "sourceTopic": "hr.employee.events"
+    }
+  ],
+  "totalElements": 1,
+  "totalPages": 1,
+  "number": 0,
+  "size": 20
+}
+```
+
+---
+
+### Known Limitation — Event Delivery
+
+> **Events are published after the DB transaction commits (after-commit callback), but before the Kafka `send()` is confirmed.** If Kafka is temporarily unavailable, the employee operation succeeds but the event is silently lost — only a log warning is emitted. The application does **not** roll back the employee change.
+>
+> For production-grade guaranteed delivery the next improvement would be the **transactional outbox pattern**: write the event to a dedicated DB table inside the same transaction as the employee change, then have a separate relay process publish to Kafka and delete the row on confirmation.
+
+---
+
+### Troubleshooting Kafka
+
+**Kafka not starting:**
+```bash
+docker compose logs kafka
+docker compose down -v && docker compose up -d
+```
+
+**Cannot connect to `localhost:9092`:**
+- Confirm `docker compose up -d` completed successfully
+- Run `docker ps` and verify `kafka` container is `Up`
+- Check `KAFKA_BOOTSTRAP_SERVERS` environment variable matches the broker address
+
+**Topic not created / messages not appearing:**
+- Topics are auto-created on first publish (`auto.create.topics.enable=true`)
+- Open Kafka UI at `http://localhost:8085` → Topics → confirm `hr.employee.events` exists
+- Perform any create/update/deactivate employee action and refresh
+
+**Consumer not receiving messages:**
+- Verify the backend started after Kafka was up
+- Check backend logs for `"Published EMPLOYEE_* event"` and `"Consuming EMPLOYEE_* event"` lines
+- In Kafka UI → Consumer Groups → `hr-employee-activity-consumer` → confirm lag is 0
+
+**Activity log page is empty:**
+- Confirm you are logged in as SYSTEM\_ADMIN
+- Confirm at least one employee create/update/deactivate has been performed
+- Check backend logs — if `"Failed to publish"` appears, Kafka was not reachable
+- Refresh the page or use the **Refresh** button
+
+**401 / 403 errors on the activity log page:**
+- 401 → not logged in; go to `/login`
+- 403 → logged in but not SYSTEM\_ADMIN; only SYSTEM\_ADMIN can view this page

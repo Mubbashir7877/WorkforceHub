@@ -7,6 +7,7 @@ import LoginPage from './pages/LoginPage.jsx'
 import AccessDeniedPage from './pages/AccessDeniedPage.jsx'
 import ProfilePage from './pages/ProfilePage.jsx'
 import UserAdminPage from './pages/UserAdminPage.jsx'
+import SystemActivityPage from './pages/SystemActivityPage.jsx'
 import EmployeeListPage from './pages/EmployeeListPage.jsx'
 import EmployeeFormPage from './pages/EmployeeFormPage.jsx'
 import NotFoundPage from './pages/NotFoundPage.jsx'
@@ -36,6 +37,7 @@ function App() {
 
             <Route element={<RoleProtectedRoute roles={[ROLES.SYSTEM_ADMIN]} />}>
               <Route path="/admin/users" element={<UserAdminPage />} />
+              <Route path="/system/activity" element={<SystemActivityPage />} />
             </Route>
           </Route>
 

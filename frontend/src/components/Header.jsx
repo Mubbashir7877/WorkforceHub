@@ -40,11 +40,18 @@ function Header() {
               </li>
             )}
             {isAuthenticated && hasRole(ROLES.SYSTEM_ADMIN) && (
-              <li className="nav-item">
-                <NavLink className={navLinkClass} to="/admin/users">
-                  User Administration
-                </NavLink>
-              </li>
+              <>
+                <li className="nav-item">
+                  <NavLink className={navLinkClass} to="/admin/users">
+                    User Administration
+                  </NavLink>
+                </li>
+                <li className="nav-item">
+                  <NavLink className={navLinkClass} to="/system/activity">
+                    System Activity
+                  </NavLink>
+                </li>
+              </>
             )}
             {isAuthenticated ? (
               <>

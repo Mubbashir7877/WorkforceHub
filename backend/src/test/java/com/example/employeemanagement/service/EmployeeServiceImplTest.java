@@ -5,6 +5,7 @@ import com.example.employeemanagement.dto.EmployeeSelfUpdateRequest;
 import com.example.employeemanagement.entity.Employee;
 import com.example.employeemanagement.entity.User;
 import com.example.employeemanagement.exception.ResourceNotFoundException;
+import com.example.employeemanagement.kafka.EmployeeActivityEventProducer;
 import com.example.employeemanagement.repository.EmployeeRepository;
 import com.example.employeemanagement.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +32,9 @@ class EmployeeServiceImplTest {
 
     @Mock
     private UserRepository userRepository;
+
+    @Mock
+    private EmployeeActivityEventProducer eventProducer;
 
     @InjectMocks
     private EmployeeServiceImpl employeeService;
