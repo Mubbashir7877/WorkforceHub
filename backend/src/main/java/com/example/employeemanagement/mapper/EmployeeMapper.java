@@ -12,7 +12,8 @@ public final class EmployeeMapper {
                 employee.getId(),
                 employee.getFirstName(),
                 employee.getLastName(),
-                employee.getEmail()
+                employee.getEmail(),
+                employee.isActive()
         );
     }
 
@@ -21,7 +22,8 @@ public final class EmployeeMapper {
                 dto.getId(),
                 dto.getFirstName(),
                 dto.getLastName(),
-                dto.getEmail()
+                dto.getEmail(),
+                dto.isActive()
         );
     }
 }

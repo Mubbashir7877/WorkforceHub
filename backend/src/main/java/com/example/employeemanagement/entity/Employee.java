@@ -1,7 +1,6 @@
 package com.example.employeemanagement.entity;
 
 import jakarta.persistence.*;
-import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -9,7 +8,6 @@ import lombok.Setter;
 @Getter
 @Setter
 @NoArgsConstructor
-@AllArgsConstructor
 @Entity
 @Table(name = "employees")
 public class Employee {
@@ -26,4 +24,19 @@ public class Employee {
 
     @Column(name = "email", nullable = false, unique = true)
     private String email;
+
+    @Column(name = "active", nullable = false)
+    private boolean active = true;
+
+    public Employee(Long id, String firstName, String lastName, String email) {
+        this(id, firstName, lastName, email, true);
+    }
+
+    public Employee(Long id, String firstName, String lastName, String email, boolean active) {
+        this.id = id;
+        this.firstName = firstName;
+        this.lastName = lastName;
+        this.email = email;
+        this.active = active;
+    }
 }

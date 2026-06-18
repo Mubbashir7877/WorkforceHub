@@ -1,6 +1,7 @@
 package com.example.employeemanagement.service;
 
 import com.example.employeemanagement.dto.EmployeeDto;
+import com.example.employeemanagement.dto.EmployeeSelfUpdateRequest;
 
 import java.util.List;
 
@@ -14,5 +15,9 @@ public interface EmployeeService {
 
     EmployeeDto updateEmployee(Long id, EmployeeDto employeeDto);
 
-    void deleteEmployee(Long id);
+    void deactivateEmployee(Long id);
+
+    EmployeeDto getOwnEmployee(Long userId);
+
+    EmployeeDto updateOwnEmployee(Long userId, EmployeeSelfUpdateRequest request);
 }

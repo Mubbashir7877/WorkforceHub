@@ -1,12 +1,16 @@
 package com.example.employeemanagement.service;
 
 import com.example.employeemanagement.dto.EmployeeDto;
+import com.example.employeemanagement.dto.EmployeeSelfUpdateRequest;
 import com.example.employeemanagement.entity.Employee;
+import com.example.employeemanagement.entity.User;
 import com.example.employeemanagement.exception.ResourceNotFoundException;
 import com.example.employeemanagement.repository.EmployeeRepository;
+import com.example.employeemanagement.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -24,6 +28,9 @@ class EmployeeServiceImplTest {
 
     @Mock
     private EmployeeRepository employeeRepository;
+
+    @Mock
+    private UserRepository userRepository;
 
     @InjectMocks
     private EmployeeServiceImpl employeeService;
@@ -87,6 +94,19 @@ class EmployeeServiceImplTest {
     }
 
     @Test
+    void createEmployee_ignoresClientSuppliedIdAndForcesActiveTrue() {
+        EmployeeDto withClientId = new EmployeeDto(999L, "John", "Doe", "john.doe@example.com", false);
+        ArgumentCaptor<Employee> captor = ArgumentCaptor.forClass(Employee.class);
+        when(employeeRepository.save(any(Employee.class))).thenReturn(employee);
+
+        employeeService.createEmployee(withClientId);
+
+        verify(employeeRepository).save(captor.capture());
+        assertThat(captor.getValue().getId()).isNull();
+        assertThat(captor.getValue().isActive()).isTrue();
+    }
+
+    @Test
     void updateEmployee_existingId_updatesAndReturnsDto() {
         EmployeeDto updateRequest = new EmployeeDto(null, "Jane", "Smith", "jane.smith@example.com");
         Employee updatedEmployee = new Employee(1L, "Jane", "Smith", "jane.smith@example.com");
@@ -109,20 +129,68 @@ class EmployeeServiceImplTest {
     }
 
     @Test
-    void deleteEmployee_existingId_deletesSuccessfully() {
-        when(employeeRepository.existsById(1L)).thenReturn(true);
+    void deactivateEmployee_existingId_setsInactiveAndSaves() {
+        when(employeeRepository.findById(1L)).thenReturn(Optional.of(employee));
+        ArgumentCaptor<Employee> captor = ArgumentCaptor.forClass(Employee.class);
 
-        employeeService.deleteEmployee(1L);
+        employeeService.deactivateEmployee(1L);
 
-        verify(employeeRepository).deleteById(1L);
+        verify(employeeRepository).save(captor.capture());
+        assertThat(captor.getValue().isActive()).isFalse();
     }
 
     @Test
-    void deleteEmployee_nonExistingId_throwsResourceNotFoundException() {
-        when(employeeRepository.existsById(99L)).thenReturn(false);
+    void deactivateEmployee_nonExistingId_throwsResourceNotFoundException() {
+        when(employeeRepository.findById(99L)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> employeeService.deleteEmployee(99L))
+        assertThatThrownBy(() -> employeeService.deactivateEmployee(99L))
                 .isInstanceOf(ResourceNotFoundException.class);
-        verify(employeeRepository, never()).deleteById(any());
+        verify(employeeRepository, never()).save(any());
+    }
+
+    @Test
+    void getOwnEmployee_userWithLinkedEmployee_returnsDto() {
+        User user = new User("john.doe@example.com", "hash");
+        user.setEmployee(employee);
+        when(userRepository.findById(7L)).thenReturn(Optional.of(user));
+
+        EmployeeDto result = employeeService.getOwnEmployee(7L);
+
+        assertThat(result.getEmail()).isEqualTo("john.doe@example.com");
+    }
+
+    @Test
+    void getOwnEmployee_userWithoutLinkedEmployee_throwsResourceNotFoundException() {
+        User user = new User("noemployee@example.com", "hash");
+        when(userRepository.findById(7L)).thenReturn(Optional.of(user));
+
+        assertThatThrownBy(() -> employeeService.getOwnEmployee(7L))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void getOwnEmployee_unknownUserId_throwsResourceNotFoundException() {
+        when(userRepository.findById(404L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> employeeService.getOwnEmployee(404L))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void updateOwnEmployee_updatesOnlyNameFields() {
+        User user = new User("john.doe@example.com", "hash");
+        user.setEmployee(employee);
+        when(userRepository.findById(7L)).thenReturn(Optional.of(user));
+        when(employeeRepository.save(any(Employee.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        EmployeeSelfUpdateRequest request = new EmployeeSelfUpdateRequest();
+        request.setFirstName("Johnny");
+        request.setLastName("Doerite");
+
+        EmployeeDto result = employeeService.updateOwnEmployee(7L, request);
+
+        assertThat(result.getFirstName()).isEqualTo("Johnny");
+        assertThat(result.getLastName()).isEqualTo("Doerite");
+        assertThat(result.getEmail()).isEqualTo("john.doe@example.com");
     }
 }

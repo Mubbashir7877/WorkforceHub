@@ -14,5 +14,8 @@ module.exports = {
   rules: {
     'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
     'no-unused-vars': 'warn',
+    // This is a small JS (not TS) app with no PropTypes anywhere; prop-types would
+    // be a one-off pattern introduced only for the auth components.
+    'react/prop-types': 'off',
   },
 }

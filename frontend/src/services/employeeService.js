@@ -1,31 +1,32 @@
-import axios from 'axios'
-
-const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080/api/v1',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-})
+import httpClient from './httpClient.js'
 
 const employeeService = {
   getAll() {
-    return apiClient.get('/employees')
+    return httpClient.get('/employees')
   },
 
   getById(id) {
-    return apiClient.get(`/employees/${id}`)
+    return httpClient.get(`/employees/${id}`)
+  },
+
+  getOwn() {
+    return httpClient.get('/employees/me')
+  },
+
+  updateOwn(data) {
+    return httpClient.put('/employees/me', data)
   },
 
   create(data) {
-    return apiClient.post('/employees', data)
+    return httpClient.post('/employees', data)
   },
 
   update(id, data) {
-    return apiClient.put(`/employees/${id}`, data)
+    return httpClient.put(`/employees/${id}`, data)
   },
 
   delete(id) {
-    return apiClient.delete(`/employees/${id}`)
+    return httpClient.delete(`/employees/${id}`)
   },
 }
 
