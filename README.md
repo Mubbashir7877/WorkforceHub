@@ -639,3 +639,256 @@ docker compose down -v && docker compose up -d
 **401 / 403 errors on the activity log page:**
 - 401 → not logged in; go to `/login`
 - 403 → logged in but not SYSTEM\_ADMIN; only SYSTEM\_ADMIN can view this page
+
+---
+
+## Phase 3 — Employee Time Clock with Kafka Event Tracking
+
+### Overview
+
+Employees can clock in and clock out from the React frontend. Each clock action:
+
+1. Is validated by the backend (no double clock-in, must be linked to an employee)
+2. Creates or closes a `time_clock_sessions` record in MySQL
+3. Publishes a Kafka event to `hr.timeclock.events`
+4. Is consumed by a Kafka listener that writes a permanent `time_clock_event_logs` record
+
+MANAGER, HR\_ADMIN, and SYSTEM\_ADMIN users can view the full time clock event log from the frontend. EMPLOYEE users can only see their own clock status and personal sessions.
+
+```
+EMPLOYEE clicks "Clock In" / "Clock Out"
+    ↓  (POST /api/v1/time-clock/clock-in or /clock-out)
+TimeClockService
+    ↓  DB write committed (TimeClockSession OPEN → CLOSED)
+    ↓  schedules after-commit callback
+TimeClockEventProducer.publish()
+    ↓
+Kafka topic: hr.timeclock.events
+    ↓
+TimeClockEventConsumer.consume()
+    ↓
+TimeClockService.saveEventLog()
+    ↓
+time_clock_event_logs table (MySQL)
+    ↓
+GET /api/v1/time-clock/events  (MANAGER / HR_ADMIN / SYSTEM_ADMIN)
+    ↓
+Time Clock Records page (React)
+```
+
+---
+
+### New Kafka Topic & Consumer Group
+
+| Item | Value |
+|------|-------|
+| **Topic** | `hr.timeclock.events` |
+| **Consumer group** | `hr-timeclock-event-consumer` |
+| **Event types** | `EMPLOYEE_CLOCKED_IN`, `EMPLOYEE_CLOCKED_OUT` |
+
+---
+
+### New Backend API Endpoints
+
+#### Employee-facing (any authenticated user with a linked employee record)
+
+| Method | Path | Description | Success |
+|--------|------|-------------|---------|
+| GET | `/api/v1/time-clock/status` | Current clock status (clocked in / out, session details) | 200 |
+| POST | `/api/v1/time-clock/clock-in` | Clock in — creates an OPEN session | 201 |
+| POST | `/api/v1/time-clock/clock-out` | Clock out — closes the OPEN session | 200 |
+| GET | `/api/v1/time-clock/my-sessions` | Paginated list of own time sessions | 200 |
+
+The backend derives the employee identity from the JWT — the frontend never sends an `employeeId`.
+
+#### Manager / Admin event log (MANAGER, HR_ADMIN, SYSTEM_ADMIN only)
+
+| Method | Path | Description | Success |
+|--------|------|-------------|---------|
+| GET | `/api/v1/time-clock/events` | Paginated, filtered Kafka-consumed event log | 200 |
+
+Optional query parameters for `/events`:
+
+| Parameter | Example | Description |
+|-----------|---------|-------------|
+| `page` | `0` | Zero-based page number |
+| `size` | `20` | Records per page |
+| `employeeId` | `5` | Filter by employee |
+| `eventType` | `EMPLOYEE_CLOCKED_IN` | Filter by event type |
+| `startDate` | `2026-01-01T00:00:00Z` | Filter events from (ISO 8601) |
+| `endDate` | `2026-12-31T23:59:59Z` | Filter events to (ISO 8601) |
+| `userEmail` | `jane@example.com` | Filter by user email |
+
+---
+
+### New Frontend Routes
+
+| Route | Page | Who can access |
+|-------|------|----------------|
+| `/time-clock` | My Time Clock | All authenticated users |
+| `/time-clock/events` | Time Clock Records | MANAGER, HR\_ADMIN, SYSTEM\_ADMIN |
+
+**Navigation bar additions:**
+- **My Time Clock** — shown to all authenticated users
+- **Time Clock Records** — shown only to MANAGER, HR\_ADMIN, SYSTEM\_ADMIN
+
+---
+
+### Role Permissions — Time Clock
+
+| Capability | EMPLOYEE | MANAGER | HR\_ADMIN | SYSTEM\_ADMIN |
+|------------|:--------:|:-------:|:---------:|:-------------:|
+| View own clock status (`/status`) | ✅ | ✅ | ✅ | ✅ |
+| Clock in / clock out | ✅ | ✅ | ✅ | ✅ |
+| View own sessions (`/my-sessions`) | ✅ | ✅ | ✅ | ✅ |
+| View all time clock events (`/events`) | ❌ | ✅* | ✅ | ✅ |
+
+> \* **MANAGER visibility note:** MANAGER currently sees all employees' time clock events. In a future phase this should be narrowed to direct reports only, once a team/manager hierarchy is implemented.
+
+---
+
+### New Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TIMECLOCK_EVENTS_TOPIC` | `hr.timeclock.events` | Kafka topic for time clock events |
+| `TIMECLOCK_KAFKA_CONSUMER_GROUP` | `hr-timeclock-event-consumer` | Consumer group ID |
+
+Add these to your IDE run configuration alongside the existing Kafka variables.
+
+---
+
+### New Database Tables (Flyway V5)
+
+**`time_clock_sessions`** — one row per work session
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | BIGINT | Primary key |
+| `employee_id` | BIGINT | FK → employees.id |
+| `user_id` | BIGINT | FK → users.id |
+| `clock_in_time` | DATETIME(6) | When the employee clocked in |
+| `clock_out_time` | DATETIME(6) | When the employee clocked out (null if OPEN) |
+| `status` | VARCHAR(10) | `OPEN` or `CLOSED` |
+
+**`time_clock_event_logs`** — Kafka-consumed event records (idempotent via `event_id` unique key)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `event_id` | VARCHAR(36) | UUID (unique, prevents duplicates) |
+| `event_type` | VARCHAR(30) | `EMPLOYEE_CLOCKED_IN` or `EMPLOYEE_CLOCKED_OUT` |
+| `employee_id`, `employee_email`, `employee_full_name` | various | Employee context |
+| `user_id`, `user_email` | various | Auth user context |
+| `session_id` | BIGINT | Links back to `time_clock_sessions.id` |
+| `metadata_json` | TEXT | For clock-out: includes `clockInTime`, `clockOutTime`, `durationMinutes` |
+
+---
+
+### Starting Kafka
+
+Kafka must be running before the backend starts (same as Phase 2):
+
+```bash
+# From the project root
+docker compose up -d
+
+# Verify Kafka is healthy
+docker ps
+
+# View topic messages (after a clock-in or clock-out)
+# Open: http://localhost:8085  → Topics → hr.timeclock.events
+```
+
+---
+
+### Starting the Backend
+
+```bash
+cd backend
+./mvnw spring-boot:run          # macOS / Linux
+.\mvnw.cmd spring-boot:run      # Windows
+```
+
+The V5 Flyway migration (`V5__create_time_clock_tables.sql`) runs automatically on startup.
+
+---
+
+### Starting the Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Navigate to `http://localhost:5173`. Log in as an EMPLOYEE to see the **My Time Clock** page. Log in as MANAGER or above to also see **Time Clock Records**.
+
+---
+
+### How to Clock In / Out
+
+1. Log in as a user who has an **employee profile linked** to their account (set via the User Administration page).
+2. Navigate to **My Time Clock** in the navbar.
+3. If clocked out: click **Clock In**. The button changes to Clock Out after success.
+4. If clocked in: click **Clock Out**. The session closes and duration is shown.
+5. After a few seconds, navigate to **Time Clock Records** (as a MANAGER or above) to see the Kafka-consumed event appear in the log.
+
+---
+
+### Error Codes (Time Clock)
+
+| `errorCode` | HTTP | Meaning |
+|-------------|------|---------|
+| `ALREADY_CLOCKED_IN` | 409 | Clock-in attempted while already clocked in |
+| `NOT_CLOCKED_IN` | 409 | Clock-out attempted without an open session |
+| `RESOURCE_NOT_FOUND` | 404 | User has no linked employee profile |
+| `ACCESS_DENIED` | 403 | EMPLOYEE tried to access `/events` |
+| `UNAUTHENTICATED` | 401 | No valid JWT provided |
+
+---
+
+### Troubleshooting — Time Clock
+
+**Kafka not running — clock-in works but events don't appear in Time Clock Records:**
+- Clock-in/out succeeds (DB write is committed first).
+- The Kafka event is attempted after commit. If Kafka is down, only a log warning is emitted — the session is NOT rolled back.
+- Start Kafka with `docker compose up -d` and perform a new clock action to generate fresh events.
+- Events from when Kafka was down are permanently lost unless the transactional outbox pattern is implemented (see **Known Limitations**).
+
+**Clock-in does not show in Time Clock Records:**
+- The event travels through Kafka asynchronously. Wait 1–2 seconds and click **Refresh**.
+- Check backend logs for `"Published EMPLOYEE_CLOCKED_IN event"` and `"Consuming EMPLOYEE_CLOCKED_IN event"`.
+- Open Kafka UI at `http://localhost:8085` → Topics → `hr.timeclock.events` to verify the message arrived.
+
+**Duplicate clock-in error (ALREADY\_CLOCKED\_IN):**
+- You are already clocked in. Click **Clock Out** first.
+
+**Clock-out without clock-in error (NOT\_CLOCKED\_IN):**
+- There is no open session to close. Click **Clock In** first.
+
+**401 Unauthorized on `/status`, `/clock-in`, or `/clock-out`:**
+- Not logged in. Go to `/login`.
+
+**403 Forbidden on `/time-clock/events`:**
+- Your account's role is `EMPLOYEE`. Only MANAGER, HR\_ADMIN, and SYSTEM\_ADMIN can view the event log.
+
+**Missing linked employee profile (404):**
+- Your user account exists but no Employee record is linked to it.
+- A SYSTEM\_ADMIN must go to User Administration → select your user → link an employee profile.
+
+**Time zone display confusion:**
+- All timestamps are stored as UTC in the backend (`Instant`).
+- The frontend converts them to the browser's local timezone for display via `new Date(iso).toLocaleString()`.
+- The exact display depends on your browser/OS locale settings.
+
+---
+
+### Known Limitations (Phase 3)
+
+1. **MANAGER sees all time clock events** — there is no team/manager hierarchy yet. A future phase should add a `manager_id` or team concept and filter `/events` to show only direct reports' entries when the caller is a MANAGER.
+
+2. **No guaranteed Kafka delivery** — events are published after the DB transaction commits. If Kafka is temporarily unavailable, the employee operation succeeds but the event is lost and will not appear in the time clock event log. A production-grade improvement would use the **transactional outbox pattern**: write the pending event to a dedicated DB table inside the same transaction, then relay it to Kafka via a separate process.
+
+3. **No payroll calculation** — duration minutes are stored in event metadata but no totals, overtime rules, or pay calculations are implemented yet.
+
+4. **No leave management, scheduling, or approval workflows** — out of scope for this phase.

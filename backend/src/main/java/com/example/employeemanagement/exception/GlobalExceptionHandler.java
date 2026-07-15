@@ -48,6 +48,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "SELF_DISABLE_NOT_ALLOWED", ex.getMessage(), request, null);
     }
 
+    @ExceptionHandler(TimeClockConflictException.class)
+    public ResponseEntity<ErrorResponse> handleTimeClockConflict(TimeClockConflictException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, ex.getErrorCode(), ex.getMessage(), request, null);
+    }
+
     @ExceptionHandler(InvalidRefreshTokenException.class)
     public ResponseEntity<ErrorResponse> handleInvalidRefreshToken(InvalidRefreshTokenException ex, HttpServletRequest request) {
         return build(HttpStatus.UNAUTHORIZED, "INVALID_REFRESH_TOKEN", ex.getMessage(), request, null);

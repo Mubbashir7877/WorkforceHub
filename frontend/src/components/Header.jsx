@@ -32,12 +32,26 @@ function Header() {
         </button>
         <div className="collapse navbar-collapse" id="mainNav">
           <ul className="navbar-nav ms-auto align-items-lg-center">
-            {isAuthenticated && hasAnyRole([ROLES.MANAGER, ROLES.HR_ADMIN, ROLES.SYSTEM_ADMIN]) && (
+            {isAuthenticated && (
               <li className="nav-item">
-                <NavLink className={navLinkClass} to="/employees">
-                  Employees
+                <NavLink className={navLinkClass} to="/time-clock">
+                  My Time Clock
                 </NavLink>
               </li>
+            )}
+            {isAuthenticated && hasAnyRole([ROLES.MANAGER, ROLES.HR_ADMIN, ROLES.SYSTEM_ADMIN]) && (
+              <>
+                <li className="nav-item">
+                  <NavLink className={navLinkClass} to="/employees">
+                    Employees
+                  </NavLink>
+                </li>
+                <li className="nav-item">
+                  <NavLink className={navLinkClass} to="/time-clock/events">
+                    Time Clock Records
+                  </NavLink>
+                </li>
+              </>
             )}
             {isAuthenticated && hasRole(ROLES.SYSTEM_ADMIN) && (
               <>

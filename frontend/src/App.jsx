@@ -10,6 +10,8 @@ import UserAdminPage from './pages/UserAdminPage.jsx'
 import SystemActivityPage from './pages/SystemActivityPage.jsx'
 import EmployeeListPage from './pages/EmployeeListPage.jsx'
 import EmployeeFormPage from './pages/EmployeeFormPage.jsx'
+import MyTimeClockPage from './pages/MyTimeClockPage.jsx'
+import TimeClockEventsPage from './pages/TimeClockEventsPage.jsx'
 import NotFoundPage from './pages/NotFoundPage.jsx'
 import { ROLES } from './constants/roles.js'
 
@@ -26,8 +28,11 @@ function App() {
             <Route path="/" element={<Navigate to="/profile" replace />} />
             <Route path="/profile" element={<ProfilePage />} />
 
+            <Route path="/time-clock" element={<MyTimeClockPage />} />
+
             <Route element={<RoleProtectedRoute roles={[ROLES.MANAGER, ROLES.HR_ADMIN, ROLES.SYSTEM_ADMIN]} />}>
               <Route path="/employees" element={<EmployeeListPage />} />
+              <Route path="/time-clock/events" element={<TimeClockEventsPage />} />
             </Route>
 
             <Route element={<RoleProtectedRoute roles={[ROLES.HR_ADMIN, ROLES.SYSTEM_ADMIN]} />}>
