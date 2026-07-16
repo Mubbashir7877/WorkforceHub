@@ -12,6 +12,8 @@ import EmployeeListPage from './pages/EmployeeListPage.jsx'
 import EmployeeFormPage from './pages/EmployeeFormPage.jsx'
 import MyTimeClockPage from './pages/MyTimeClockPage.jsx'
 import TimeClockEventsPage from './pages/TimeClockEventsPage.jsx'
+import HrAssistantPage from './pages/HrAssistantPage.jsx'
+import HrPolicyAdminPage from './pages/HrPolicyAdminPage.jsx'
 import NotFoundPage from './pages/NotFoundPage.jsx'
 import { ROLES } from './constants/roles.js'
 
@@ -29,6 +31,7 @@ function App() {
             <Route path="/profile" element={<ProfilePage />} />
 
             <Route path="/time-clock" element={<MyTimeClockPage />} />
+            <Route path="/ai/hr-assistant" element={<HrAssistantPage />} />
 
             <Route element={<RoleProtectedRoute roles={[ROLES.MANAGER, ROLES.HR_ADMIN, ROLES.SYSTEM_ADMIN]} />}>
               <Route path="/employees" element={<EmployeeListPage />} />
@@ -38,6 +41,7 @@ function App() {
             <Route element={<RoleProtectedRoute roles={[ROLES.HR_ADMIN, ROLES.SYSTEM_ADMIN]} />}>
               <Route path="/employees/new" element={<EmployeeFormPage />} />
               <Route path="/employees/:id/edit" element={<EmployeeFormPage />} />
+              <Route path="/hr/policies" element={<HrPolicyAdminPage />} />
             </Route>
 
             <Route element={<RoleProtectedRoute roles={[ROLES.SYSTEM_ADMIN]} />}>

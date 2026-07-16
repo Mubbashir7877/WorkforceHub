@@ -892,3 +892,369 @@ Navigate to `http://localhost:5173`. Log in as an EMPLOYEE to see the **My Time 
 3. **No payroll calculation** — duration minutes are stored in event metadata but no totals, overtime rules, or pay calculations are implemented yet.
 
 4. **No leave management, scheduling, or approval workflows** — out of scope for this phase.
+
+---
+
+## Phase 4 — Spring AI HR Knowledge Assistant
+
+### Overview
+
+HR_ADMIN/SYSTEM_ADMIN users upload official HR policy documents. The backend extracts,
+chunks, and embeds their text into a vector store. Any authenticated employee can then
+ask the HR Assistant a question, and it answers **strictly from that indexed content**
+— citing sources — or says plainly that the available policy documents don't contain
+enough information and recommends contacting HR. The assistant never invents policy,
+never makes employment decisions, and treats uploaded documents as untrusted data, not
+instructions (see **Prompt-injection protections** below).
+
+```
+HR_ADMIN uploads policy (POST /hr/policies, then /upload)
+        ↓
+DocumentStorageService (local disk — see Known Limitations)
+        ↓
+HR_ADMIN triggers /process
+        ↓
+DocumentTextExtractor (PDFBox / Apache POI / plain UTF-8)
+        ↓
+DocumentChunker (overlapping ~1000-char chunks, page-aware for PDF)
+        ↓
+EmbeddingModel (OpenAI-compatible, via Spring AI)
+        ↓
+VectorStore (SimpleVectorStore, in-memory)
+        ↓
+HR_ADMIN triggers /activate → document becomes searchable
+
+Authenticated user asks a question (POST /ai/hr-assistant/chat)
+        ↓
+HrAssistantController → HrAssistantService
+        ↓
+HrPolicyKnowledgeService.retrieveRelevant() — active + READY documents only
+        ↓
+Spring AI ChatClient.prompt().system(context).user(question).call()
+        ↓
+Grounded answer + source citations
+        ↓
+AiConversation / AiMessage / AiResponseSource audit records (owner-scoped)
+```
+
+---
+
+### Spring AI concepts used
+
+| Concept | How it's used here |
+|---|---|
+| `ChatModel` / `ChatClient` | `OpenAiChatModel` wired manually in `config/ai/AiClientConfig`, wrapped by `ChatClient` for the fluent `prompt().system().user().call()` API |
+| `EmbeddingModel` | `OpenAiEmbeddingModel`, same manually-built `OpenAiApi` client as the chat model |
+| `VectorStore` | `SimpleVectorStore` (in-memory) built from the `EmbeddingModel` bean |
+| `Document` | One per policy chunk — `id` is deterministic (`doc-{documentId}-chunk-{index}`), `metadata` carries `documentId`, `documentTitle`, `category`, `version`, `pageNumber`, `sectionName`, `chunkIndex`, `effectiveDate` |
+| `SearchRequest` | `topK` / `similarityThreshold` from `AI_TOP_K` / `AI_SIMILARITY_THRESHOLD` |
+
+**Provider abstraction note:** `AI_BASE_URL` can point at OpenAI itself or any
+OpenAI-compatible endpoint (Ollama's compatibility mode, LM Studio, vLLM, a proxy).
+`AI_PROVIDER` is accepted, validated, and surfaced via the status endpoint, but does
+not select a different SDK — implementing true multi-SDK provider swapping was out of
+scope for this phase (see **Known Limitations**).
+
+---
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_ENABLED` | `false` | Master switch. When `false`, the app still starts normally and AI endpoints return `503 AI_DISABLED` |
+| `AI_PROVIDER` | `openai` | Informational/validated; see provider abstraction note above |
+| `AI_API_KEY` | *(empty)* | API key for the chat/embedding provider. Required (with `AI_ENABLED=true`) for AI features to activate |
+| `AI_MODEL` | `gpt-4o-mini` | Chat model name |
+| `AI_BASE_URL` | `https://api.openai.com` | Chat/embedding API base URL |
+| `AI_TEMPERATURE` | `0.2` | Chat sampling temperature |
+| `AI_MAX_TOKENS` | `800` | Max tokens per chat completion |
+| `AI_TOP_K` | `5` | Number of chunks retrieved per question |
+| `AI_SIMILARITY_THRESHOLD` | `0.5` | Minimum similarity score for a retrieved chunk to be used |
+| `HR_DOCUMENT_STORAGE_PATH` | `./data/hr-policy-documents` | Local disk path for uploaded originals (outside Git, outside `src`) |
+| `HR_DOCUMENT_MAX_UPLOAD_BYTES` | `10485760` (10 MB) | Max upload size enforced by `LocalDocumentStorageService` |
+
+None of these values, including the API key, are ever logged, returned in API
+responses, or exposed via `/api/v1/system/ai/status` (see **Security decisions**).
+
+---
+
+### Supported document formats
+
+| Format | Extractor | Notes |
+|---|---|---|
+| Plain text (`.txt`) | `PlainTextDocumentExtractor` | Read directly as UTF-8 |
+| Markdown (`.md`) | `PlainTextDocumentExtractor` | Read directly as UTF-8, no Markdown parsing |
+| PDF (`.pdf`) | `PdfDocumentExtractor` (Apache PDFBox) | Page-level text preserved for accurate `pageNumber` citations. Scanned/image-only PDFs are rejected (`DOCUMENT_TEXT_EMPTY`) — OCR is out of scope |
+| Word (`.docx`) | `DocxDocumentExtractor` (Apache POI) | Whole-document text only — DOCX has no reliable page-boundary metadata without a layout engine |
+
+Upload validation (`LocalDocumentStorageService`) rejects anything else, oversized
+files, path-traversal filenames, and files whose content doesn't match their claimed
+type (PDF/DOCX magic-byte check) — the client-supplied MIME type is never trusted
+alone.
+
+---
+
+### Policy upload and processing flow
+
+1. `POST /api/v1/hr/policies` — create draft metadata (`DRAFT`)
+2. `POST /api/v1/hr/policies/{id}/upload` — attach the file (`UPLOADED`)
+3. `POST /api/v1/hr/policies/{id}/process` — extract → chunk → embed → index (`READY` or `FAILED`); re-processing deletes and replaces the document's previous chunks, so it's always safe to re-run
+4. `POST /api/v1/hr/policies/{id}/activate` — only allowed once `READY`; flips `active=true` and the document becomes searchable
+5. `POST /api/v1/hr/policies/{id}/deactivate` — flips `active=false`, sets `INACTIVE`, and removes its chunks from the vector store (soft-deactivation only — the document row and its metadata are never deleted)
+
+### RAG flow
+
+1. `HrAssistantService.chat()` resolves/creates an `AiConversation` (ownership-checked if `conversationId` is supplied) and persists the user's question as an `AiMessage`
+2. `HrPolicyKnowledgeService.retrieveRelevant()` queries the vector store and, as defense-in-depth, re-checks each result's owning document is still `active && READY` before returning it
+3. A system prompt is built that clearly separates instructions from the retrieved context (marked as untrusted data) from the user's raw question, sent via `ChatClient.prompt().system(...).user(...)`
+4. The answer is persisted as an `AiMessage` (`grounded` = whether any chunks were retrieved) with up to 5 `AiResponseSource` rows (short excerpts only, never full chunks/documents)
+
+---
+
+### Assistant permissions
+
+| Capability | EMPLOYEE | MANAGER | HR\_ADMIN | SYSTEM\_ADMIN |
+|---|:---:|:---:|:---:|:---:|
+| Use the HR Assistant (`/chat`) | ✅ | ✅ | ✅ | ✅ |
+| View own conversations | ✅ | ✅ | ✅ | ✅ |
+| View another user's conversations | ❌ | ❌ | ❌ | ❌ |
+
+> SYSTEM_ADMIN deliberately gets **no** override to read other users' conversation
+> content — see **Security decisions**. `/api/v1/system/ai/status` gives SYSTEM_ADMIN
+> aggregate operational data only (enabled flag, model name, active document count),
+> never conversation content.
+
+### Policy-management permissions
+
+| Capability | EMPLOYEE | MANAGER | HR\_ADMIN | SYSTEM\_ADMIN |
+|---|:---:|:---:|:---:|:---:|
+| Create / update policy metadata | ❌ | ❌ | ✅ | ✅ |
+| Upload / process / activate / deactivate | ❌ | ❌ | ✅ | ✅ |
+| Download original file | ❌ | ❌ | ✅ | ✅ |
+| View AI operational status (`/system/ai/status`) | ❌ | ❌ | ❌ | ✅ |
+
+---
+
+### New Backend API Endpoints
+
+#### HR Assistant (any authenticated user)
+
+| Method | Path | Description | Success |
+|--------|------|-------------|---------|
+| POST | `/api/v1/ai/hr-assistant/chat` | Ask a question; creates a conversation if `conversationId` is omitted | 200 |
+| GET | `/api/v1/ai/hr-assistant/conversations` | Paginated list of the caller's own conversations | 200 |
+| GET | `/api/v1/ai/hr-assistant/conversations/{id}` | Full conversation with messages + sources (owner only) | 200 |
+| DELETE | `/api/v1/ai/hr-assistant/conversations/{id}` | Delete a conversation (owner only) | 204 |
+
+#### HR Policy Administration (HR_ADMIN, SYSTEM_ADMIN only)
+
+| Method | Path | Description | Success |
+|--------|------|-------------|---------|
+| GET | `/api/v1/hr/policies` | Paginated, filterable (`category`, `active`) list | 200 |
+| GET | `/api/v1/hr/policies/{id}` | Get one document | 200 |
+| POST | `/api/v1/hr/policies` | Create draft metadata | 201 |
+| PUT | `/api/v1/hr/policies/{id}` | Update metadata | 200 |
+| POST | `/api/v1/hr/policies/{id}/upload` | Upload/replace the file (multipart) | 200 |
+| POST | `/api/v1/hr/policies/{id}/process` | Extract, chunk, embed, index | 200 |
+| POST | `/api/v1/hr/policies/{id}/activate` | Make searchable | 200 |
+| POST | `/api/v1/hr/policies/{id}/deactivate` | Remove from search + soft-deactivate | 200 |
+| GET | `/api/v1/hr/policies/{id}/download` | Download the original file | 200 |
+
+#### System AI Status (SYSTEM_ADMIN only)
+
+| Method | Path | Description | Success |
+|--------|------|-------------|---------|
+| GET | `/api/v1/system/ai/status` | `{ enabled, providerConfigured, model, knowledgeBaseAvailable, activePolicyDocuments }` — no secrets | 200 |
+
+---
+
+### New Frontend Routes
+
+| Route | Page | Who can access |
+|-------|------|-----------------|
+| `/ai/hr-assistant` | HR Assistant | All authenticated users |
+| `/hr/policies` | HR Policy Documents | HR\_ADMIN, SYSTEM\_ADMIN |
+
+**Navigation bar additions:**
+- **HR Assistant** — shown to all authenticated users
+- **Policy Documents** — shown only to HR\_ADMIN, SYSTEM\_ADMIN
+
+---
+
+### New Database Tables
+
+**Flyway V6 — `hr_policy_documents`**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | BIGINT | Primary key |
+| `title`, `description`, `category`, `version`, `effective_date` | various | Document metadata |
+| `active` | BOOLEAN | Soft-deactivation flag |
+| `processing_status` | VARCHAR(12) | `DRAFT` \| `UPLOADED` \| `PROCESSING` \| `READY` \| `FAILED` \| `INACTIVE` |
+| `chunk_count` | INT | Number of chunks currently indexed, for deterministic replace-on-reindex |
+| `original_file_name`, `content_type`, `storage_type`, `storage_location` | various | Storage metadata (never returned to clients as a raw path) |
+| `uploaded_by_user_id`, `uploaded_by_email` | various | Audit fields |
+
+**Flyway V7 — `ai_conversations`, `ai_messages`, `ai_response_sources`**
+
+| Table | Key columns |
+|---|---|
+| `ai_conversations` | `user_id`, `user_email`, `created_at`, `updated_at` |
+| `ai_messages` | `conversation_id` (FK, cascade delete), `role` (`USER`\|`ASSISTANT`\|`SYSTEM`), `content`, `grounded`, `model_name` |
+| `ai_response_sources` | `message_id` (FK, cascade delete), `document_id`, `document_title`, `page_number`, `chunk_index`, `excerpt`, `similarity_score` |
+
+No hidden provider reasoning, API keys, raw Authorization headers, or access/refresh
+tokens are ever stored in these tables — only the visible question/answer text and
+grounding metadata, for auditing.
+
+---
+
+### Local setup
+
+```bash
+cd backend
+./mvnw spring-boot:run          # macOS / Linux
+.\mvnw.cmd spring-boot:run      # Windows
+```
+
+The V6/V7 Flyway migrations run automatically. The app starts normally with no AI
+configuration at all — the HR Assistant and policy-processing endpoints simply return
+`503 AI_DISABLED` / `KNOWLEDGE_BASE_UNAVAILABLE` until you set:
+
+```bash
+AI_ENABLED=true
+AI_API_KEY=sk-...
+# Optional — defaults shown above
+AI_MODEL=gpt-4o-mini
+AI_BASE_URL=https://api.openai.com
+```
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Navigate to `http://localhost:5173`. **HR Assistant** is visible to any logged-in
+user; **Policy Documents** is visible to HR\_ADMIN/SYSTEM\_ADMIN.
+
+### AI-disabled behavior
+
+With `AI_ENABLED=false` (the default) or a missing `AI_API_KEY`:
+- The application context still starts — the conditional `ChatModel`/`EmbeddingModel`/
+  `ChatClient`/`VectorStore` beans (`config/ai/AiClientConfig`, gated by
+  `AiEnabledCondition`) simply aren't created.
+- `POST /ai/hr-assistant/chat` returns `503 { "errorCode": "AI_DISABLED" }`.
+- `POST /hr/policies/{id}/process` returns `503 { "errorCode": "KNOWLEDGE_BASE_UNAVAILABLE" }`.
+- The frontend HR Assistant page shows a dedicated "currently unavailable" banner
+  rather than a generic error.
+
+---
+
+### Testing
+
+```bash
+cd backend
+./mvnw test
+```
+
+Covers, without ever making a real network call to an AI provider:
+- **Unit tests** — `HrPolicyDocumentService`, `LocalDocumentStorageService` (path
+  traversal, magic-byte, size-limit, extension validation via `@TempDir`),
+  `PlainText`/`Pdf`/`DocxDocumentExtractor` (using real PDFBox/POI-generated
+  fixtures), `DocumentChunker`, `HrPolicyKnowledgeService` (mocked `VectorStore` via
+  `ObjectProvider`), `HrAssistantService` (mocked `ChatClient` fluent chain,
+  AI-disabled path, provider-failure path, ownership rules)
+- **Controller tests** — `@WebMvcTest` + the project's `MethodSecurityTestConfig`
+  pattern for `HrPolicyController`, `HrAssistantController`, `SystemAiStatusController`
+  — auth-required, role checks, validation, AI-disabled responses
+- **Integration test** (`HrPolicyAssistantIntegrationTest`) — `@SpringBootTest` +
+  real Spring Security filter chain + H2, with a `@TestConfiguration` stubbing
+  `ChatModel`/`EmbeddingModel` (deterministic fake vectors, canned chat response) and
+  a `@TempDir`-backed storage path: full upload → process → activate → grounded chat
+  → source citation flow, cross-user conversation-access denial, and exclusion of a
+  deactivated document's chunks from retrieval
+
+```bash
+cd frontend
+npm install
+npm run lint
+npm run build
+```
+
+No frontend test framework exists yet in this project, so `lint` + `build` are the
+frontend gate, consistent with earlier phases.
+
+---
+
+### Security decisions
+
+- **AI beans are conditional, never required to boot** — `AiEnabledCondition` gates
+  all Spring AI bean creation on `ai.enabled=true` and a non-blank `ai.api-key`, read
+  directly from the `Environment` (conditions run before `@ConfigurationProperties`
+  beans exist). Every AI-dependent service injects these via `ObjectProvider`/
+  `Optional` and fails with a structured `AiUnavailableException` rather than an NPE.
+- **Ownership-only conversation access, no admin override** — matches the "prefer
+  privacy-preserving access" guidance. SYSTEM_ADMIN's operational visibility is
+  limited to `/system/ai/status`'s aggregate counts.
+- **Uploaded content is never trusted for validation** — extension allow-list +
+  magic-byte sniffing (never the client-supplied Content-Type alone), server-generated
+  storage filenames (rules out path traversal/collisions by construction), and a
+  configurable upload size cap enforced in application code (with a generous
+  `spring.servlet.multipart.max-file-size` ceiling as a second line of defense).
+- **Secrets never leave the process** — `AI_API_KEY` is read from the environment,
+  used only to construct the `OpenAiApi` client, and never logged, returned in a
+  response body, or included in `/system/ai/status`.
+- **Documents are never hard-deleted** — only `active`/`processing_status` change.
+  Conversations *can* be hard-deleted by their owner (`DELETE /conversations/{id}`),
+  which is a user-privacy action, not a policy-document one.
+
+### Prompt-injection protections
+
+Uploaded HR documents are treated as **untrusted content** end-to-end:
+- The system prompt (`HrAssistantService.SYSTEM_PROMPT_TEMPLATE`) explicitly instructs
+  the model to treat the "RETRIEVED HR POLICY CONTEXT" section as data, never as
+  instructions — even if it contains phrases like "ignore previous instructions."
+- System instructions, retrieved document context, and the user's raw question are
+  structurally separated: instructions + context go in the `ChatClient` system role,
+  the question goes in the user role — never concatenated into one blob.
+- The assistant is explicitly instructed not to reveal its own system prompt, API
+  keys, database contents, or internal implementation details, even if asked directly.
+- No tool-calling, URL fetching, code execution, or filesystem/database access is
+  wired into the model in this phase — it can only produce text.
+- The model is instructed never to make employment decisions, evaluate performance, or
+  give legal/medical/tax/immigration/financial conclusions — policy question-answering
+  only.
+
+---
+
+### Known Limitations (Phase 4)
+
+1. **Single-SDK provider abstraction** — `AI_PROVIDER` is accepted and surfaced but
+   does not switch SDKs; only an OpenAI-compatible client is wired. `AI_BASE_URL`
+   covers most self-hosted/compatible setups (Ollama, LM Studio, vLLM, proxies), but
+   a provider requiring a genuinely different request/response shape (e.g. native
+   Anthropic or Bedrock) is out of scope for this phase.
+2. **In-memory vector store** — `SimpleVectorStore` does not persist across restarts.
+   After a restart, previously-activated documents remain marked `active`/`READY` in
+   the database but their chunks are gone from the (now-empty) vector store; an
+   HR_ADMIN must re-run `/process` (and the retrieval-time defense-in-depth check
+   means stale answers are never silently served — they just return no results until
+   reprocessed). A production deployment should swap in a persistent vector database
+   behind the same `VectorStore` interface.
+3. **Local disk storage is temporary** — `DocumentStorageService`/
+   `LocalDocumentStorageService` store originals on local disk
+   (`HR_DOCUMENT_STORAGE_PATH`), Git-ignored and outside `src`. This is explicitly a
+   placeholder; Amazon S3 (or another `DocumentStorageService` implementation) is the
+   intended production replacement, and callers already depend only on the interface.
+4. **No OCR** — scanned/image-only PDFs yield no extractable text and are rejected
+   (`DOCUMENT_TEXT_EMPTY`) rather than silently producing an empty/wrong answer.
+5. **DOCX has no page numbers** — citations for `.docx` sources omit `pageNumber`
+   since DOCX has no reliable page-boundary metadata without a full layout engine.
+6. **No streaming responses** — the chat endpoint is request/response only; Spring
+   AI's streaming APIs (`ChatClient.stream()`) were not wired into this phase's
+   frontend.
+7. **Live AI provider connectivity was not exercised in this environment** — no
+   AI credentials or Docker were available, so real OpenAI/Ollama calls could not be
+   tested. All AI provider behavior is verified via mocked/stubbed `ChatModel`/
+   `EmbeddingModel` beans (see **Testing**).

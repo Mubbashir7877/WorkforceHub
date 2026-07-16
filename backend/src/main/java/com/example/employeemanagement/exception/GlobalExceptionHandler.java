@@ -53,6 +53,46 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, ex.getErrorCode(), ex.getMessage(), request, null);
     }
 
+    @ExceptionHandler(InvalidPolicyCategoryException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidPolicyCategory(InvalidPolicyCategoryException ex, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, "INVALID_CATEGORY", ex.getMessage(), request, null);
+    }
+
+    @ExceptionHandler(PolicyDocumentNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handlePolicyDocumentNotFound(PolicyDocumentNotFoundException ex, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "POLICY_DOCUMENT_NOT_FOUND", ex.getMessage(), request, null);
+    }
+
+    @ExceptionHandler(ConversationNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleConversationNotFound(ConversationNotFoundException ex, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", ex.getMessage(), request, null);
+    }
+
+    @ExceptionHandler(ConversationAccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleConversationAccessDenied(ConversationAccessDeniedException ex, HttpServletRequest request) {
+        return build(HttpStatus.FORBIDDEN, "CONVERSATION_ACCESS_DENIED", ex.getMessage(), request, null);
+    }
+
+    @ExceptionHandler(PolicyDocumentStateException.class)
+    public ResponseEntity<ErrorResponse> handlePolicyDocumentState(PolicyDocumentStateException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, ex.getErrorCode(), ex.getMessage(), request, null);
+    }
+
+    @ExceptionHandler(DocumentUploadException.class)
+    public ResponseEntity<ErrorResponse> handleDocumentUpload(DocumentUploadException ex, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, ex.getErrorCode(), ex.getMessage(), request, null);
+    }
+
+    @ExceptionHandler(DocumentProcessingException.class)
+    public ResponseEntity<ErrorResponse> handleDocumentProcessing(DocumentProcessingException ex, HttpServletRequest request) {
+        return build(HttpStatus.UNPROCESSABLE_ENTITY, ex.getErrorCode(), ex.getMessage(), request, null);
+    }
+
+    @ExceptionHandler(AiUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleAiUnavailable(AiUnavailableException ex, HttpServletRequest request) {
+        return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getErrorCode(), ex.getMessage(), request, null);
+    }
+
     @ExceptionHandler(InvalidRefreshTokenException.class)
     public ResponseEntity<ErrorResponse> handleInvalidRefreshToken(InvalidRefreshTokenException ex, HttpServletRequest request) {
         return build(HttpStatus.UNAUTHORIZED, "INVALID_REFRESH_TOKEN", ex.getMessage(), request, null);

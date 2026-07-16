@@ -39,6 +39,13 @@ function Header() {
                 </NavLink>
               </li>
             )}
+            {isAuthenticated && (
+              <li className="nav-item">
+                <NavLink className={navLinkClass} to="/ai/hr-assistant">
+                  HR Assistant
+                </NavLink>
+              </li>
+            )}
             {isAuthenticated && hasAnyRole([ROLES.MANAGER, ROLES.HR_ADMIN, ROLES.SYSTEM_ADMIN]) && (
               <>
                 <li className="nav-item">
@@ -52,6 +59,13 @@ function Header() {
                   </NavLink>
                 </li>
               </>
+            )}
+            {isAuthenticated && hasAnyRole([ROLES.HR_ADMIN, ROLES.SYSTEM_ADMIN]) && (
+              <li className="nav-item">
+                <NavLink className={navLinkClass} to="/hr/policies">
+                  Policy Documents
+                </NavLink>
+              </li>
             )}
             {isAuthenticated && hasRole(ROLES.SYSTEM_ADMIN) && (
               <>
