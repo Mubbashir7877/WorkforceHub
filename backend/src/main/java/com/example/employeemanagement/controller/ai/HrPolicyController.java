@@ -1,9 +1,11 @@
 package com.example.employeemanagement.controller.ai;
 
+import com.example.employeemanagement.dto.PolicyConflictReviewResponse;
 import com.example.employeemanagement.dto.PolicyDocumentCreateRequest;
 import com.example.employeemanagement.dto.PolicyDocumentResponse;
 import com.example.employeemanagement.dto.PolicyDocumentUpdateRequest;
 import com.example.employeemanagement.service.HrPolicyDocumentService;
+import com.example.employeemanagement.service.PolicyConflictReviewService;
 import com.example.employeemanagement.service.PolicyDocumentDownload;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +31,7 @@ import org.springframework.web.multipart.MultipartFile;
 public class HrPolicyController {
 
     private final HrPolicyDocumentService documentService;
+    private final PolicyConflictReviewService conflictReviewService;
 
     @GetMapping
     public ResponseEntity<Page<PolicyDocumentResponse>> list(
@@ -64,6 +67,11 @@ public class HrPolicyController {
     @PostMapping("/{id}/process")
     public ResponseEntity<PolicyDocumentResponse> process(@PathVariable Long id) {
         return ResponseEntity.ok(documentService.process(id));
+    }
+
+    @PostMapping("/{id}/review-conflicts")
+    public ResponseEntity<PolicyConflictReviewResponse> reviewConflicts(@PathVariable Long id) {
+        return ResponseEntity.ok(conflictReviewService.reviewForConflicts(id));
     }
 
     @PostMapping("/{id}/activate")

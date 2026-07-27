@@ -40,6 +40,8 @@ function HrPolicyAdminPage() {
   const [busyId, setBusyId] = useState(null)
   const fileInputRefs = useRef({})
 
+  const [conflictReview, setConflictReview] = useState(null)
+
   const fetchDocuments = useCallback(() => {
     setLoading(true)
     setError(null)
@@ -138,6 +140,22 @@ function HrPolicyAdminPage() {
     }
   }
 
+  const handleReviewConflicts = async doc => {
+    setBusyId(doc.id)
+    setError(null)
+    try {
+      const res = await hrPolicyService.reviewConflicts(doc.id)
+      setConflictReview({ documentTitle: doc.title, ...res.data })
+      if (!res.data.hasConflicts) {
+        setSuccessMessage(`No contradictions found between "${doc.title}" and other active policies.`)
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Conflict review failed.')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const handleActivate = async doc => {
     setBusyId(doc.id)
     setError(null)
@@ -199,6 +217,55 @@ function HrPolicyAdminPage() {
         <div className="alert alert-success alert-dismissible" role="alert">
           {successMessage}
           <button type="button" className="btn-close" aria-label="Close" onClick={() => setSuccessMessage(null)} />
+        </div>
+      )}
+
+      {conflictReview && (
+        <div className={`card mb-4 border-${conflictReview.hasConflicts ? 'warning' : 'success'}`}>
+          <div className="card-header d-flex justify-content-between align-items-center">
+            <h5 className="mb-0">
+              Conflict Review — {conflictReview.documentTitle}
+            </h5>
+            <button
+              type="button"
+              className="btn-close"
+              aria-label="Close"
+              onClick={() => setConflictReview(null)}
+            />
+          </div>
+          <div className="card-body">
+            <p className="text-muted small">
+              AI-detected potential contradictions with other active policy documents. This is
+              advisory only — review carefully and use your own judgment; it does not block activation.
+            </p>
+            {!conflictReview.hasConflicts ? (
+              <div className="alert alert-success mb-0">
+                No contradictions found with other active policy documents.
+              </div>
+            ) : (
+              <div className="d-flex flex-column gap-3">
+                {conflictReview.conflicts.map((c, i) => (
+                  <div key={i} className="border rounded p-3">
+                    <div className="d-flex justify-content-between align-items-start mb-2">
+                      <strong>Conflicts with: {c.conflictingDocumentTitle}</strong>
+                      <span className="badge bg-light text-dark border">{c.conflictingDocumentCategory}</span>
+                    </div>
+                    <div className="row g-3 mb-2">
+                      <div className="col-md-6">
+                        <div className="small text-muted mb-1">New document says:</div>
+                        <div className="small bg-light rounded p-2">{c.newDocumentExcerpt}</div>
+                      </div>
+                      <div className="col-md-6">
+                        <div className="small text-muted mb-1">Existing document says:</div>
+                        <div className="small bg-light rounded p-2">{c.conflictingDocumentExcerpt}</div>
+                      </div>
+                    </div>
+                    <div className="alert alert-warning mb-0 py-2">{c.explanation}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -391,6 +458,16 @@ function HrPolicyAdminPage() {
                               disabled={isBusy}
                             >
                               {isBusy ? 'Processing…' : doc.processingStatus === 'UPLOADED' ? 'Process' : 'Reprocess'}
+                            </button>
+                          )}
+
+                          {doc.processingStatus === 'READY' && (
+                            <button
+                              className="btn btn-sm btn-outline-info"
+                              onClick={() => handleReviewConflicts(doc)}
+                              disabled={isBusy}
+                            >
+                              {isBusy ? 'Reviewing…' : 'Review for Conflicts'}
                             </button>
                           )}
 

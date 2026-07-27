@@ -1,9 +1,11 @@
 package com.example.employeemanagement.controller.ai;
 
+import com.example.employeemanagement.dto.PolicyConflictReviewResponse;
 import com.example.employeemanagement.dto.PolicyDocumentResponse;
 import com.example.employeemanagement.security.CustomUserDetailsService;
 import com.example.employeemanagement.security.JwtService;
 import com.example.employeemanagement.service.HrPolicyDocumentService;
+import com.example.employeemanagement.service.PolicyConflictReviewService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -46,6 +48,9 @@ class HrPolicyControllerSecurityTest {
 
     @MockBean
     private HrPolicyDocumentService documentService;
+
+    @MockBean
+    private PolicyConflictReviewService conflictReviewService;
 
     @MockBean
     private JwtService jwtService;
@@ -182,6 +187,41 @@ class HrPolicyControllerSecurityTest {
         when(documentService.deactivate(1L)).thenReturn(sampleResponse());
 
         mockMvc.perform(post("/api/v1/hr/policies/1/deactivate").with(csrf()))
+                .andExpect(status().isOk());
+    }
+
+    // ── review-conflicts ─────────────────────────────────────────────────
+
+    @Test
+    void reviewConflicts_unauthenticated_returns401() throws Exception {
+        mockMvc.perform(post("/api/v1/hr/policies/1/review-conflicts").with(csrf()))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithMockUser(roles = "EMPLOYEE")
+    void reviewConflicts_employee_returns403() throws Exception {
+        mockMvc.perform(post("/api/v1/hr/policies/1/review-conflicts").with(csrf()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(roles = "HR_ADMIN")
+    void reviewConflicts_hrAdmin_returns200() throws Exception {
+        when(conflictReviewService.reviewForConflicts(1L))
+                .thenReturn(new PolicyConflictReviewResponse(1L, false, java.util.List.of(), Instant.now()));
+
+        mockMvc.perform(post("/api/v1/hr/policies/1/review-conflicts").with(csrf()))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(roles = "SYSTEM_ADMIN")
+    void reviewConflicts_systemAdmin_returns200() throws Exception {
+        when(conflictReviewService.reviewForConflicts(1L))
+                .thenReturn(new PolicyConflictReviewResponse(1L, false, java.util.List.of(), Instant.now()));
+
+        mockMvc.perform(post("/api/v1/hr/policies/1/review-conflicts").with(csrf()))
                 .andExpect(status().isOk());
     }
 

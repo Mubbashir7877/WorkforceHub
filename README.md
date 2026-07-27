@@ -1351,3 +1351,101 @@ environment before wiring up the full app.
    return `true` regardless of `AI_ENABLED`) and seeding would otherwise pollute
    that shared in-memory vector store with real content outside any test's
    transaction boundary.
+
+---
+
+## Phase 6 — AI Policy Conflict Review
+
+### Overview
+
+Before an HR_ADMIN/SYSTEM_ADMIN activates a processed (`READY`) policy document —
+the point at which it starts being used to answer every employee's questions — they
+can trigger an AI review that checks the new document for contradictions against
+other already-active policy documents. This is **advisory only**, matching the HR
+Assistant's own design philosophy (see Phase 4 **Prompt-injection protections**):
+the review never blocks or makes the activation decision itself, it only surfaces
+AI-detected candidate contradictions for a human to judge. LLM-based contradiction
+detection has real false-positive/false-negative rates, so treating it as a hard
+gate would either block legitimate activations or provide false assurance.
+
+```
+HR_ADMIN clicks "Review for Conflicts" on a READY document
+        ↓
+PolicyConflictReviewService.reviewForConflicts(documentId)
+        ↓
+Re-extract + re-chunk the document's own stored file (DocumentTextExtractor + DocumentChunker)
+        ↓
+For each of its chunks (capped at AI_CONFLICT_REVIEW_MAX_CHUNKS), similarity-search
+the vector store for related chunks from OTHER active documents
+(HrPolicyKnowledgeService.retrieveRelevant, threshold AI_CONFLICT_REVIEW_SIMILARITY_THRESHOLD)
+        ↓
+Keep the top AI_CONFLICT_REVIEW_MAX_CANDIDATE_PAIRS (new-chunk, existing-chunk) pairs by score
+        ↓
+If no candidates: return "no conflicts" immediately, skipping the model call entirely
+        ↓
+Otherwise: one ChatClient call, asking the model to flag which pairs genuinely
+contradict, returned as strict JSON
+        ↓
+PolicyConflictReviewResponse — list of conflicts with excerpts + explanation,
+shown to the admin; does not change the document's state
+```
+
+### Why this design
+
+- **Advisory, not a gate.** No new `PolicyProcessingStatus`, no persisted review
+  state, no blocking of `/activate` — reviewing is a distinct, repeatable action
+  (`POST /api/v1/hr/policies/{id}/review-conflicts`) an admin can run as many times
+  as they want, including on an already-active document (its own chunks are
+  explicitly excluded from its own candidate list either way).
+- **Bounded cost.** Rather than comparing full documents pairwise (expensive and
+  mostly irrelevant), only chunks that are already *semantically similar* to the
+  new document (via the existing embedding-based similarity search) are sent to
+  the model for a contradiction judgment — and that candidate set itself is capped.
+  A document with nothing similar in the library yet (e.g. the very first policy)
+  short-circuits to "no conflicts" without ever calling the model.
+- **Same trust boundary as the HR Assistant.** The system prompt explicitly treats
+  all policy text as untrusted data, not instructions — identical reasoning to
+  Phase 4's prompt-injection protections, since this reviewer also reads
+  admin-uploaded document content it doesn't otherwise control.
+
+### Environment Variables (additions)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_CONFLICT_REVIEW_SIMILARITY_THRESHOLD` | `0.55` | Minimum similarity score for an existing chunk to be considered a candidate contradiction (higher than `AI_SIMILARITY_THRESHOLD`, since this is picking candidates worth asking the model about, not answering a question) |
+| `AI_CONFLICT_REVIEW_MAX_CHUNKS` | `20` | Caps how many of the new document's own chunks are compared, bounding cost on very large documents |
+| `AI_CONFLICT_REVIEW_MAX_CANDIDATE_PAIRS` | `15` | Caps how many candidate pairs are sent to the model in one review call |
+
+### Permissions
+
+Reuses `HrPolicyController`'s existing class-level access rule — `review-conflicts`
+requires `HR_ADMIN` or `SYSTEM_ADMIN`, identical to every other policy-management
+endpoint. No new roles or permission changes.
+
+### UI
+
+`HrPolicyAdminPage` gains a **"Review for Conflicts"** button on any `READY`
+document (next to Process/Activate). Results render in a dismissible panel above
+the document table — green with "No contradictions found" when clean, or one
+expandable block per conflict showing the conflicting document's title/category,
+a short excerpt from each side, and the model's explanation, plus a persistent
+disclaimer that this is advisory and doesn't block activation.
+
+### Known Limitations (Phase 6)
+
+1. **Not persisted.** Review results are computed fresh on every request and
+   never written to the database — there's no audit trail of past reviews or
+   which conflicts an admin already saw and chose to activate through anyway.
+2. **No cross-check on deactivation/edit.** Editing an already-active document's
+   content, or activating a second document later that conflicts with a *third*,
+   doesn't automatically trigger a re-review of anything — it's purely an
+   on-demand action the admin chooses to run.
+3. **English, single-call JSON extraction.** The model is asked for strict JSON
+   with no output-schema enforcement (e.g. no `BeanOutputConverter`) beyond prompt
+   instructions; malformed output surfaces as a generic `AI_RESPONSE_INVALID`
+   error rather than a retry.
+4. **Not exercised against a live LLM in this environment** — no AI credentials
+   or a running MySQL instance were available, so this was verified with mocked
+   `ChatClient` responses (`PolicyConflictReviewServiceTest`) and a full backend
+   test suite pass (211/211), plus a frontend build/lint pass, but not a live
+   browser walkthrough against a real backend.

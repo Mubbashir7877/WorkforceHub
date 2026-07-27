@@ -26,6 +26,13 @@ public class AiProperties {
     private int topK;
     private double similarityThreshold;
 
+    // Policy conflict review (see service/PolicyConflictReviewService) — kept
+    // separate from topK/similarityThreshold above since it tunes a different
+    // trade-off (precision of candidate contradictions vs. LLM prompt size/cost).
+    private double conflictReviewSimilarityThreshold;
+    private int conflictReviewMaxChunks;
+    private int conflictReviewMaxCandidatePairs;
+
     public boolean isConfigured() {
         return enabled && apiKey != null && !apiKey.isBlank();
     }

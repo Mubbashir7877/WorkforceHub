@@ -27,6 +27,8 @@ const hrPolicyService = {
 
   process: id => httpClient.post(`/hr/policies/${id}/process`),
 
+  reviewConflicts: id => httpClient.post(`/hr/policies/${id}/review-conflicts`),
+
   activate: id => httpClient.post(`/hr/policies/${id}/activate`),
 
   deactivate: id => httpClient.post(`/hr/policies/${id}/deactivate`),
