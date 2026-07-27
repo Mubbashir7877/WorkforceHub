@@ -918,7 +918,7 @@ DocumentTextExtractor (PDFBox / Apache POI / plain UTF-8)
         ↓
 DocumentChunker (overlapping ~1000-char chunks, page-aware for PDF)
         ↓
-EmbeddingModel (OpenAI-compatible, via Spring AI)
+EmbeddingModel (local Hugging Face model, via Spring AI — see Phase 5)
         ↓
 VectorStore (SimpleVectorStore, in-memory)
         ↓
@@ -944,7 +944,7 @@ AiConversation / AiMessage / AiResponseSource audit records (owner-scoped)
 | Concept | How it's used here |
 |---|---|
 | `ChatModel` / `ChatClient` | `OpenAiChatModel` wired manually in `config/ai/AiClientConfig`, wrapped by `ChatClient` for the fluent `prompt().system().user().call()` API |
-| `EmbeddingModel` | `OpenAiEmbeddingModel`, same manually-built `OpenAiApi` client as the chat model |
+| `EmbeddingModel` | `TransformersEmbeddingModel` (sentence-transformers/all-MiniLM-L6-v2, ONNX, runs in-process) — local and free, independent of the chat provider (see Phase 5) |
 | `VectorStore` | `SimpleVectorStore` (in-memory) built from the `EmbeddingModel` bean |
 | `Document` | One per policy chunk — `id` is deterministic (`doc-{documentId}-chunk-{index}`), `metadata` carries `documentId`, `documentTitle`, `category`, `version`, `pageNumber`, `sectionName`, `chunkIndex`, `effectiveDate` |
 | `SearchRequest` | `topK` / `similarityThreshold` from `AI_TOP_K` / `AI_SIMILARITY_THRESHOLD` |
@@ -972,6 +972,8 @@ scope for this phase (see **Known Limitations**).
 | `AI_SIMILARITY_THRESHOLD` | `0.5` | Minimum similarity score for a retrieved chunk to be used |
 | `HR_DOCUMENT_STORAGE_PATH` | `./data/hr-policy-documents` | Local disk path for uploaded originals (outside Git, outside `src`) |
 | `HR_DOCUMENT_MAX_UPLOAD_BYTES` | `10485760` (10 MB) | Max upload size enforced by `LocalDocumentStorageService` |
+| `AI_EMBEDDING_CACHE_DIR` | `./data/onnx-model-cache` | Where the local Hugging Face embedding model's ONNX weights/runtime are cached after first download — see **Phase 5** |
+| `HR_DOCUMENT_SEED_DEFAULTS` | `true` | Seeds a starter policy library on first run when the policy library is empty and AI is enabled — see **Phase 5** |
 
 None of these values, including the API key, are ever logged, returned in API
 responses, or exposed via `/api/v1/system/ai/status` (see **Security decisions**).
@@ -1241,7 +1243,11 @@ Uploaded HR documents are treated as **untrusted content** end-to-end:
    HR_ADMIN must re-run `/process` (and the retrieval-time defense-in-depth check
    means stale answers are never silently served — they just return no results until
    reprocessed). A production deployment should swap in a persistent vector database
-   behind the same `VectorStore` interface.
+   behind the same `VectorStore` interface. This applies equally to the default
+   policies seeded by `HrPolicySeedRunner` (see **Phase 5**) — after a restart they
+   remain `active`/`READY` in the database but need `/process` re-run to be
+   retrievable again; `HrPolicySeedRunner` itself only seeds once (it no-ops
+   whenever any policy document already exists) and will not recreate them.
 3. **Local disk storage is temporary** — `DocumentStorageService`/
    `LocalDocumentStorageService` store originals on local disk
    (`HR_DOCUMENT_STORAGE_PATH`), Git-ignored and outside `src`. This is explicitly a
@@ -1258,3 +1264,90 @@ Uploaded HR documents are treated as **untrusted content** end-to-end:
    AI credentials or Docker were available, so real OpenAI/Ollama calls could not be
    tested. All AI provider behavior is verified via mocked/stubbed `ChatModel`/
    `EmbeddingModel` beans (see **Testing**).
+
+---
+
+## Phase 5 — Local Hugging Face Embeddings & Starter Policy Library
+
+### Overview
+
+Two additions on top of Phase 4, both aimed at making the HR Assistant work with
+less setup and no paid API usage for the RAG side of the pipeline:
+
+1. **Local embeddings.** `EmbeddingModel` is now `TransformersEmbeddingModel`
+   (`spring-ai-transformers`) instead of `OpenAiEmbeddingModel` — a small Hugging
+   Face model (`sentence-transformers/all-MiniLM-L6-v2`, 384 dimensions, ONNX)
+   that runs in-process via DJL. Chat generation is unaffected and still goes
+   through whatever `AI_BASE_URL`/`AI_MODEL`/`AI_API_KEY` are configured (OpenAI,
+   Ollama, LM Studio, etc.) — only embeddings (used for indexing policy chunks and
+   for every retrieval at chat time) changed.
+2. **Starter policy library.** `HrPolicySeedRunner` (an `ApplicationRunner`, same
+   pattern as `AdminBootstrapRunner`) seeds eight general workplace policy
+   documents — one per `PolicyCategory` except `OTHER` (Employee Handbook
+   Overview, Attendance/Time Clock, PTO & Leave, Benefits, Code of Conduct, Data
+   Security, Remote Work, Compensation) — the first time the policy library is
+   empty and AI is available. It runs the same upload → process → activate
+   lifecycle a real HR_ADMIN would (`service/... ` is bypassed in favor of the
+   repositories/services directly, since there's no authenticated user at
+   startup), so seeded documents behave exactly like uploaded ones. Content lives
+   in `config/ai/DefaultPolicies.java` — edit, replace, or deactivate any of them
+   like any other policy document once real company policy is uploaded.
+
+### Why a local embedding model
+
+- **No API key or per-call cost for embeddings.** Indexing a large policy library
+  and answering every employee question both require embedding calls; running
+  that locally removes both the cost and the OpenAI dependency for that half of
+  the pipeline.
+- **Works with any chat backend.** Because embeddings are now provider-independent
+  from chat, `AI_BASE_URL` can point anywhere (OpenAI, a local Ollama server, a
+  proxy) without needing that same endpoint to also serve embeddings.
+
+### How it actually works — first run downloads, then fully offline
+
+The model is **not bundled inside the `spring-ai-transformers` jar**. On first use,
+`TransformersEmbeddingModel` downloads the tokenizer (~500KB) and ONNX model
+(~90MB) from `raw.githubusercontent.com/spring-projects/spring-ai`, and DJL
+downloads its native PyTorch runtime (CPU, ~100+MB) from `publish.djl.ai`. Both are
+cached under `AI_EMBEDDING_CACHE_DIR` (default `./data/onnx-model-cache`) and
+DJL's own cache directory; every run after the first is fully offline with no
+further network calls, no API key, and no per-request cost. Expect the first
+embedding call after a fresh environment (or a cleared cache) to take on the order
+of 10-20 seconds; subsequent calls are fast.
+
+### Verifying it works
+
+```
+./mvnw test -Dtest=TransformersEmbeddingModelSmokeTest
+```
+
+This test instantiates `TransformersEmbeddingModel` directly (no Spring context,
+no database) and asserts it produces distinct embeddings for two sentences —
+useful for confirming the model downloads and loads correctly in a new
+environment before wiring up the full app.
+
+### Environment Variables (additions)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_EMBEDDING_CACHE_DIR` | `./data/onnx-model-cache` | Cache directory for the local embedding model's downloaded files |
+| `HR_DOCUMENT_SEED_DEFAULTS` | `true` | Set to `false` to skip seeding the starter policy library and manage policies manually from day one |
+
+### Known Limitations (Phase 5)
+
+1. **First-run network dependency.** Despite being "local" thereafter, the very
+   first embedding call needs internet access to download the model and DJL's
+   native runtime. A fully air-gapped deployment would need to pre-populate
+   `AI_EMBEDDING_CACHE_DIR` (and DJL's cache) out of band.
+2. **Seeding is one-shot and untranslated.** `HrPolicySeedRunner` only seeds when
+   the policy table is completely empty (see Known Limitation #2 in Phase 4 for
+   what a restart does to the in-memory vector store) and the default policies are
+   English-only, generic content — not legal advice, and not tailored to any
+   specific company, jurisdiction, or benefits plan. They are a reasonable
+   starting point for an HR_ADMIN to edit or replace, not a finished handbook.
+3. **In tests, seeding is disabled.** `backend/src/test/resources/application.properties`
+   sets `app.hr-documents.seed-defaults=false`, since RAG integration tests supply
+   their own stub `VectorStore` bean (making `HrPolicyKnowledgeService.isAvailable()`
+   return `true` regardless of `AI_ENABLED`) and seeding would otherwise pollute
+   that shared in-memory vector store with real content outside any test's
+   transaction boundary.

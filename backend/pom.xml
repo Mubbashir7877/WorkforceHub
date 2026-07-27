@@ -124,6 +124,15 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-vector-store</artifactId>
         </dependency>
+        <!-- Local Hugging Face embedding model (sentence-transformers/all-MiniLM-L6-v2,
+             ONNX, runs in-process via DJL) - no API key needed for embeddings, see
+             config/ai/AiClientConfig. Downloads the ~90MB model + native runtime once
+             on first use and caches them (ai.embedding.cache-directory); fully offline
+             after that, with no per-request cost or external call. -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-transformers</artifactId>
+        </dependency>
 
         <!-- HR policy document text extraction -->
         <dependency>
